@@ -1,0 +1,83 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(GEOquery)
+gse <- getGEO("GSE64810")
+```
+```{r}
+gse <- gse[[1]]
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+
+clean_columns <- function(df) {
+  new_df <- df
+  for (col in names(df)) {
+    # Check if the column has at least one "label: value" formatted row
+    if (any(grepl(".*: .*", df[[col]]))) {
+      # Extract label from the first matching row
+      label <- sub(":.*$", "", df[[col]][grepl(".*: .*", df[[col]])][1])  # Extract text before ':'
+      
+      # Extract the value for "label: value" rows; leave others unchanged
+      new_df[[col]] <- ifelse(
+        grepl(".*: .*", df[[col]]), 
+        sub(".*: ", "", df[[col]]),  # Extract text after ':'
+        df[[col]]  # Leave non-matching rows as is
+      )
+      
+      # Rename the column using the label
+      names(new_df)[names(new_df) == col] <- label
+    }
+  }
+  return(new_df)
+}
+
+remove_ch1_duplicates <- function(df) {
+  # Get all column names with and without ":ch1" suffix
+  cols_with_ch1 <- grep(":ch1$", names(df), value = TRUE)
+  cols_no_ch1 <- sub(":ch1$", "", cols_with_ch1)
+  
+  # Check for duplicates (columns with and without ":ch1" having the same data)
+  for (col in cols_no_ch1) {
+    if (col %in% names(df) && paste0(col, ":ch1") %in% names(df)) {
+      # Compare the columns to check if they are duplicates
+      if (all(df[[col]] == df[[paste0(col, ":ch1")]], na.rm = TRUE)) {
+        # Remove the ":ch1" column if they are duplicates
+        df[[paste0(col, ":ch1")]] <- NULL
+      }
+    }
+  }
+  
+  return(df)
+}
+
+
+sample <- pData(gse)
+sample <- sample[, sapply(sample, function(col) length(unique(col)) > 1)]
+sample <- clean_columns(sample)
+sample <- remove_ch1_duplicates(sample)
+sample <- sample[,0:13]
+sample <- sample[,-c(1,2)]
+sample
+write.csv(sample, 'sampleInfo.csv')
+
+```
+```{r}
+summary(sample[,0:13])
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
