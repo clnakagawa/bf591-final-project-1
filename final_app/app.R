@@ -4,6 +4,10 @@ library(ggplot2)
 library(DT)
 library(pheatmap)
 library(fgsea)
+library(tidyr)
+library(dplyr)
+library(ggbeeswarm)
+
 
 # Define UI
 ui <- fluidPage(
@@ -36,15 +40,22 @@ ui <- fluidPage(
              sidebarLayout(
                sidebarPanel(
                  fileInput("countsFile", "Upload Normalized Counts Matrix (CSV)", accept = ".csv"),
-                 sliderInput("varianceSlider", "Percentile of Variance", min = 0, max = 100, value = 50),
-                 sliderInput("nonZeroSlider", "Minimum Non-Zero Samples", min = 0, max = 100, value = 50)
+                 sliderInput("varianceSlider", "Minimum Variance", min = 0, max = 1, value = 0.5),
+                 sliderInput("nonZeroSlider", "Minimum Non-Zero Samples", min = 0, max = 69, value = 50),
+                 actionButton("applyFilter", "Apply Filter"),
                ),
                mainPanel(
                  tabsetPanel(
-                   tabPanel("Filtering Effects", DT::dataTableOutput("filteredCounts")),
-                   tabPanel("Diagnostic Plots", plotOutput("diagnosticPlot")),
-                   tabPanel("Clustered Heatmap", plotOutput("heatmapPlot")),
-                   tabPanel("PCA Plot", plotOutput("pcaPlot"))
+                   tabPanel("Filtering Effects", DTOutput("filterSummaryTable")),
+                   tabPanel("Diagnostic Plots",
+                            plotOutput("medianVsVariancePlot"),
+                            plotOutput("medianVsZerosPlot")),
+                   tabPanel("Clustered Heatmap", 
+                            plotOutput("heatmapPlot", height = "700px")),
+                   tabPanel("PCA",
+                            numericInput("numPCs", "Number of Principal Components to Plot:", value = 2, min = 1),
+                            plotOutput("pcaBeeswarmPlot")
+                   )
                  )
                )
              )
@@ -58,7 +69,16 @@ ui <- fluidPage(
                mainPanel(
                  tabsetPanel(
                    tabPanel("DE Table", DT::dataTableOutput("deResults")),
-                   tabPanel("Volcano Plot", plotOutput("volcanoPlot"))
+                   tabPanel("Volcano Plot", 
+                            sidebarLayout(
+                              sidebarPanel(
+                                sliderInput("pValueCutoff", "P-value Cutoff (Log Scale):", min = -30, max = -1, value = -5, step = 1),
+                                sliderInput("logFCutoff", "Log2 Fold Change Cutoff:", min = 0, max = 5, value = 1, step = 0.1)
+                              ),
+                              mainPanel(
+                                plotOutput("volcanoPlot")
+                              )
+                            ))
                  )
                )
              )
@@ -76,15 +96,12 @@ ui <- fluidPage(
                             sidebarPanel(
                               sliderInput("topPathways", "Number of top pathways to plot", min = 1, max = 20, value = 5)
                             ),
-                            mainPanel(
-                              plotOutput("barPlot"),
-                              DT::dataTableOutput("selectedPathwayTable")
-                            )
+                            mainPanel(plotOutput("barPlot"))
                    ),
                    # Tab 2: Filtered Table of GSEA Results
                    tabPanel("Filtered Results Table",
                             sidebarPanel(
-                              sliderInput("adjustedPValue", "Filter by Adjusted P-value", min = 0, max = 1, value = 0.05),
+                              sliderInput("adjustedPValue", "Adjusted P-value Cutoff (Log Scale):", min = -50, max = -1, value = -5, step = 1),
                               radioButtons("nesFilter", "Select NES Direction", choices = c("All" = "all", "Positive" = "positive", "Negative" = "negative"))
                             ),
                             mainPanel(
@@ -95,7 +112,7 @@ ui <- fluidPage(
                    # Tab 3: Scatter Plot of NES vs -log10 Adjusted P-value
                    tabPanel("NES vs Adjusted P-value Scatter",
                             sidebarPanel(
-                              sliderInput("scatterPValue", "Filter by Adjusted P-value", min = 0, max = 1, value = 0.05)
+                              sliderInput("scatterPValue", "Adjusted P-value Cutoff (Log Scale):", min = -50, max = -1, value = -5, step = 1)
                             ),
                             mainPanel(
                               plotOutput("scatterPlot")
@@ -110,6 +127,8 @@ ui <- fluidPage(
 
 # Define Server Logic
 server <- function(input, output, session) {
+  # change maximum upload size for later counts data
+  options(shiny.maxRequestSize=30*1024^2)
   
   # Sample Data Exploration
   observe({
@@ -223,46 +242,186 @@ server <- function(input, output, session) {
     counts_data <- read.csv(input$countsFile$datapath, row.names = 1)
     
     # Filtered counts matrix based on sliders
-    filtered_counts <- reactive({
-      variance_threshold <- input$varianceSlider / 100
-      non_zero_threshold <- input$nonZeroSlider / 100
+    filtered_counts <- eventReactive(input$applyFilter, {
+      variance_threshold <- input$varianceSlider
+      non_zero_threshold <- input$nonZeroSlider
       variance <- apply(counts_data, 1, var)
-      non_zero_samples <- apply(counts_data != 0, 1, sum) / ncol(counts_data)
+      non_zero_samples <- apply(counts_data != 0, 1, sum) 
       counts_data[variance > quantile(variance, variance_threshold) & non_zero_samples > non_zero_threshold, ]
     })
     
-    output$filteredCounts <- DT::renderDataTable({
-      DT::datatable(filtered_counts(), options = list(pageLength = 10, scrollX = TRUE))
+    output$filterSummaryTable <- renderDT({
+      # filtered data
+      filtered <- filtered_counts()
+      
+      # Calculate summary
+      num_samples <- ncol(counts_data)  # Number of columns (samples)
+      total_genes <- nrow(counts_data)  # Total number of genes
+      passing_genes <- nrow(filtered)  # Genes passing the filter
+      not_passing_genes <- total_genes - passing_genes  # Genes not passing the filter
+      percent_passing <- (passing_genes / total_genes) * 100
+      percent_not_passing <- (not_passing_genes / total_genes) * 100
+      
+      # Create summary table
+      summary_df <- data.frame(
+        Metric = c("Number of Samples", 
+                   "Total Number of Genes", 
+                   "Number of Genes Passing Filter", 
+                   "Percentage of Genes Passing Filter", 
+                   "Number of Genes Not Passing Filter", 
+                   "Percentage of Genes Not Passing Filter"),
+        Value = c(num_samples, 
+                  total_genes, 
+                  passing_genes, 
+                  sprintf("%.2f%%", percent_passing), 
+                  not_passing_genes, 
+                  sprintf("%.2f%%", percent_not_passing))
+      )
+      
+      datatable(summary_df, options = list(dom = "t", paging = FALSE), rownames = FALSE)
     })
     
-    output$diagnosticPlot <- renderPlot({
-      hist(filtered_counts())
+    output$medianVsVariancePlot <- renderPlot({
+      # Calculate median and variance for all genes
+      filtered <- filtered_counts()
+      
+      gene_stats <- data.frame(
+        Median = apply(counts_data, 1, median),
+        Variance = apply(counts_data, 1, var),
+        PassedFilter = rownames(counts_data) %in% rownames(filtered)
+      )
+      
+      # Create scatter plot
+      ggplot(gene_stats, aes(x = Median, y = Variance, color = PassedFilter)) +
+        geom_point(alpha = 0.7) +
+        scale_x_log10() + 
+        scale_y_log10() +
+        labs(
+          title = "Median Count vs Variance",
+          x = "Median Count (log scale)",
+          y = "Variance (log scale)"
+        ) +
+        scale_color_manual(values = c("TRUE" = "darkblue", "FALSE" = "lightgray")) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 16, face = "bold"))
+    })
+    
+    # Render median count vs number of zeros scatter plot
+    output$medianVsZerosPlot <- renderPlot({
+      # Calculate median and number of zeros for all genes
+      filtered <- filtered_counts()
+      
+      gene_stats <- data.frame(
+        Median = apply(counts_data, 1, median),
+        NumZeros = rowSums(counts_data == 0),
+        PassedFilter = rownames(counts_data) %in% rownames(filtered)
+      )
+      
+      # Create scatter plot
+      ggplot(gene_stats, aes(x = Median, y = NumZeros, color = PassedFilter)) +
+        geom_point(alpha = 0.7) +
+        scale_x_log10() +
+        labs(
+          title = "Median Count vs Number of Zeros",
+          x = "Median Count (log scale)",
+          y = "Number of Zeros"
+        ) +
+        scale_color_manual(values = c("TRUE" = "darkblue", "FALSE" = "lightgray")) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 16, face = "bold"))
     })
     
     output$heatmapPlot <- renderPlot({
-      pheatmap(filtered_counts())
+      req(filtered_counts())
+      # Get the filtered counts matrix
+      filtered <- log2(filtered_counts() + 1)
+      
+      #print(filtered)
+      # Create heatmap
+      pheatmap(
+        mat = as.matrix(filtered),
+        cluster_cols = T,
+        cluster_rows = T,
+        legend = TRUE,
+        main = "Clustered Heatmap of Filtered Counts (log2 scaled)",
+        fontsize = 12,
+        show_rownames = F,
+        show_colnames = F
+      )
     })
     
-    output$pcaPlot <- renderPlot({
-      pca <- prcomp(t(filtered_counts()))
-      ggplot(as.data.frame(pca$x), aes(x = PC1, y = PC2)) +
-        geom_point() +
-        labs(title = "PCA Plot")
+    output$pcaBeeswarmPlot <- renderPlot({
+      req(filtered_counts())  # Ensure the filtered counts matrix exists
+      
+      counts <- filtered_counts()
+      # Perform PCA
+      pca_result <- prcomp(t(counts), center = TRUE, scale. = TRUE)  # PCA on samples (transpose counts)
+      
+      # Extract PCA variance explained
+      var_explained <- (pca_result$sdev^2 / sum(pca_result$sdev^2)) * 100
+      
+      # Extract PCA scores
+      pca_scores <- as.data.frame(pca_result$x)
+      pca_scores$Sample <- rownames(pca_scores)  # Add sample names
+      
+      # Limit to top N principal components
+      num_pcs <- min(input$numPCs, ncol(pca_scores) - 1)  # Ensure valid number of PCs
+      pcs_to_plot <- paste0("PC", 1:num_pcs)
+      pca_scores_long <- pca_scores %>%
+        select(Sample, all_of(pcs_to_plot)) %>%
+        tidyr::pivot_longer(
+          cols = starts_with("PC"),
+          names_to = "PrincipalComponent",
+          values_to = "Score"
+        )
+      
+      # Add variance explained as a label
+      pca_scores_long$VarianceExplained <- sapply(
+        pca_scores_long$PrincipalComponent,
+        function(pc) round(var_explained[as.numeric(sub("PC", "", pc))], 2)
+      )
+      
+      # Generate beeswarm plot
+      ggplot(pca_scores_long, aes(x = PrincipalComponent, y = Score)) +
+        geom_beeswarm(size = 3, alpha = 0.8, color = "blue") +
+        labs(
+          title = paste("Beeswarm Plot of Top", num_pcs, "Principal Components"),
+          x = "Principal Component",
+          y = "PCA Score"
+        ) +
+        scale_x_discrete(labels = function(pc) {
+          sapply(pc, function(pc_name) {
+            pc_index <- as.numeric(sub("PC", "", pc_name))
+            paste0(pc_name, " (", round(var_explained[pc_index], 2), "%)")
+          })
+        }) +
+        theme(
+          plot.title = element_text(size = 16, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)
+        )
     })
   })
   
   # Differential Expression Analysis
   observe({
     req(input$deFile)
-    de_data <- read.csv(input$deFile$datapath)
+    de_data <- read.csv(input$deFile$datapath, row.names = 1)
     output$deResults <- DT::renderDataTable({
       DT::datatable(de_data, options = list(pageLength = 10, scrollX = TRUE))
     })
     
     output$volcanoPlot <- renderPlot({
-      ggplot(de_data, aes(x = log2FoldChange, y = -log10(pvalue))) +
+      # get p-val and logFC cutoff
+      pvalue_cutoff <- 10^input$pValueCutoff
+      logfc_cutoff <- input$logFCutoff
+      
+      ggplot(de_data, aes(x = log2FoldChange, y = -log10(pvalue), color = pvalue <= pvalue_cutoff & abs(log2FoldChange) >= logfc_cutoff)) +
         geom_point(alpha = 0.6) +
-        theme_minimal() +
+        theme(
+          legend.position = "none",
+          plot.title = element_text(size = 16, face = "bold"),
+          axis.text.x = element_text(size = 12)
+        ) +
         labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 P-value")
     })
   })
@@ -296,7 +455,7 @@ server <- function(input, output, session) {
     gsea_results <- gsea_data()
     
     # Filter by adjusted p-value
-    filtered_data <- gsea_results[gsea_results$padj <= input$adjustedPValue, ]
+    filtered_data <- gsea_results[gsea_results$padj <= 10^input$adjustedPValue, ]
     
     # Filter by NES direction (positive or negative)
     if (input$nesFilter == "positive") {
@@ -321,10 +480,9 @@ server <- function(input, output, session) {
   # Tab 3: Scatter Plot of NES vs -log10 Adjusted P-value
   output$scatterPlot <- renderPlot({
     gsea_results <- gsea_data()
-    filtered_results <- gsea_results[gsea_results$padj <= input$scatterPValue, ]
     
-    ggplot(filtered_results, aes(x = NES, y = -log10(padj))) +
-      geom_point(aes(color = ifelse(padj <= input$scatterPValue, "Significant", "Not Significant")), size = 2) +
+    ggplot(gsea_results, aes(x = NES, y = -log10(padj))) +
+      geom_point(aes(color = ifelse(padj <= 10^input$scatterPValue, "Significant", "Not Significant")), size = 2) +
       scale_color_manual(values = c("Not Significant" = "grey", "Significant" = "red")) +
       labs(title = "NES vs -log10 Adjusted P-value", x = "Normalized Enrichment Score (NES)", y = "-log10 Adjusted P-value") +
       theme_minimal()

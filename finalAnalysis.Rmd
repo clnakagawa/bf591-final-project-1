@@ -72,7 +72,32 @@ write.csv(sample, 'sampleInfo.csv')
 
 ```
 ```{r}
-summary(sample[,0:13])
+df <- read.csv('diffExp.csv', row.names = 1)
+
+```
+```{r}
+library(tidyverse)
+cts <- read.csv('counts.csv', row.names = 1)
+
+```
+```{r}
+library(fgsea)
+pathways_c2 <- gmtPathways("c2.all.v2024.1.Hs.symbols.gmt")
+```
+```{r}
+df_res <- df %>%
+  dplyr::select(symbol, log2FoldChange) %>% 
+  na.omit() %>% 
+  distinct() %>% 
+  group_by(symbol) %>% 
+  summarize(log2FoldChange=mean(log2FoldChange))
+df_res
+
+ranks <- deframe(df_res)
+fgseaRes <- fgsea(pathways=pathways_c2, stats=ranks)
+```
+```{r}
+read.csv('fgseaRes.csv',row.names=1)
 ```
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
