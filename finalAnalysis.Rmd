@@ -73,7 +73,7 @@ write.csv(sample, 'sampleInfo.csv')
 ```
 ```{r}
 df <- read.csv('diffExp.csv', row.names = 1)
-
+df
 ```
 ```{r}
 library(tidyverse)
@@ -82,15 +82,18 @@ cts <- read.csv('counts.csv', row.names = 1)
 ```
 ```{r}
 library(fgsea)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
 pathways_c2 <- gmtPathways("c2.all.v2024.1.Hs.symbols.gmt")
 ```
 ```{r}
 df_res <- df %>%
-  dplyr::select(symbol, log2FoldChange) %>% 
+  dplyr::select(symbol, stat) %>% 
   na.omit() %>% 
   distinct() %>% 
-  group_by(symbol) %>% 
-  summarize(log2FoldChange=mean(log2FoldChange))
+  group_by(stat) %>% 
+  summarize(=mean(stat))
 df_res
 
 ranks <- deframe(df_res)

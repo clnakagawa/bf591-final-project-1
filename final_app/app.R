@@ -102,11 +102,11 @@ ui <- fluidPage(
                    tabPanel("Filtered Results Table",
                             sidebarPanel(
                               sliderInput("adjustedPValue", "Adjusted P-value Cutoff (Log Scale):", min = -50, max = -1, value = -5, step = 1),
-                              radioButtons("nesFilter", "Select NES Direction", choices = c("All" = "all", "Positive" = "positive", "Negative" = "negative"))
+                              radioButtons("nesFilter", "Select NES Direction", choices = c("All" = "all", "Positive" = "positive", "Negative" = "negative")),
+                              downloadButton("downloadTable", "Download Filtered Results")
                             ),
                             mainPanel(
-                              DT::dataTableOutput("filteredGSEAResults"),
-                              downloadButton("downloadTable", "Download Filtered Results")
+                              DT::dataTableOutput("filteredGSEAResults")
                             )
                    ),
                    # Tab 3: Scatter Plot of NES vs -log10 Adjusted P-value
@@ -429,7 +429,7 @@ server <- function(input, output, session) {
   # Gene Set Enrichment Analysis (GSEA)
   gsea_data <- reactive({
     req(input$gseaFile)
-    read.csv(input$gseaFile$datapath)
+    read.csv(input$gseaFile$datapath, row.names=1)
   })
   
   # Tab 1: Barplot of top pathways by NES
@@ -485,7 +485,7 @@ server <- function(input, output, session) {
       geom_point(aes(color = ifelse(padj <= 10^input$scatterPValue, "Significant", "Not Significant")), size = 2) +
       scale_color_manual(values = c("Not Significant" = "grey", "Significant" = "red")) +
       labs(title = "NES vs -log10 Adjusted P-value", x = "Normalized Enrichment Score (NES)", y = "-log10 Adjusted P-value") +
-      theme_minimal()
+      theme(legend.position = 'none')
   })
 }
 
